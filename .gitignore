@@ -1,0 +1,16 @@
+/data/
+**/config.json
+*.csv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+/dist/
+/build/
+*.spec
