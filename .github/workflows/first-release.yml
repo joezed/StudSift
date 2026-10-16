@@ -1,0 +1,41 @@
+name: Publish first release
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/first-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out StudSift
+        uses: actions/checkout@v4
+      - name: Test Python backend
+        run: python -m unittest -v test_server.py
+      - name: Test JavaScript syntax
+        run: node --check web/app.js
+      - name: Build downloadable package
+        shell: bash
+        run: |
+          mkdir -p dist/StudSift-v0.1.0
+          cp -R web .github server.py start.bat test_server.py README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md LICENSE .gitignore dist/StudSift-v0.1.0/
+          cd dist
+          zip -q -r StudSift-v0.1.0.zip StudSift-v0.1.0
+      - name: Publish v0.1.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view v0.1.0 >/dev/null 2>&1; then
+            echo "v0.1.0 already exists; leaving the published release untouched."
+            exit 0
+          fi
+          gh release create v0.1.0 dist/StudSift-v0.1.0.zip \
+            --target "$GITHUB_SHA" \
+            --title "StudSift v0.1.0 — First public release" \
+            --notes "First open-source preview of StudSift. Includes local CSV inventory, instant webcam scanning with Brickognize, set collection via Rebrickable, configurable bag capacity, and the Possible Matches tab for verifying colour mix-ups before collecting pieces. Requires Python 3.10+. Existing inventory is retained when you keep your data folder. Unofficial LEGO companion app."
