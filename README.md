@@ -1,3 +1,6 @@
+
+![Studsift Image.](https://joezalewski.co.uk/rec/studsift-top.png)
+
 # StudSift
 
 StudSift is a free, open-source, **local-only** LEGO® part scanner, bag organiser and set tracker. Identify bricks with a webcam, sort loose pieces into numbered bags, and find which parts of a LEGO set you already own. **Your collection is stored in CSV files on your computer**, not on a cloud server.
