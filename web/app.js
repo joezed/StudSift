@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const E = (tag, cls='', value='') => { const e=document.createElement(tag); if(cls)e.className=cls; e.textContent=value; return e; };
 const safeImage = url => typeof url === 'string' && /^https:\/\//i.test(url);
 let inventory={inventory:[],bags:[],sets:[],total_pieces:0,different_parts:0,total_bags:0};
-let activeSet='', openedSet='', setView='picking', currentDetail=null;
+let activeSet='', openedSet='', setView='picking', currentDetail=null, showOtherColourMatches=false;
 let selectedCandidate=null, videoStream=null, busy=false, photoUrl=null;
 let pendingPreview=null, pendingSignature=null, revision=0, previewTimer=null;
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -103,10 +103,53 @@ function renderSetDetail(detail){const parent=$('set-detail');parent.replaceChil
   const stats=E('div','set-totals');for(const [number,label] of [[detail.total_collected,'Collected'],[detail.total_required-detail.total_collected,'Still needed'],[detail.can_collect_now,'Available loose'],[detail.set_bags.length,'Set bags']]){const box=E('div','mini-stat');box.append(E('strong','',String(number)),E('span','',label));stats.append(box);}parent.append(stats);
   const progress=E('div','big-progress'),fill=E('div');fill.style.width=detail.total_required?Math.min(100,100*detail.total_collected/detail.total_required)+'%':'100%';progress.append(fill);parent.append(progress);
   const scanButton=E('button','btn secondary','Make this my active scanning set');scanButton.type='button';scanButton.addEventListener('click',()=>{activeSet=set.set_num;$('active-set').value=activeSet;calculateSoon();setTab('scan');});parent.append(scanButton);
-  const tabs=E('div','set-tabs');for(const [tab,label] of [['picking','Pick from loose bags'],['missing','Full parts checklist']]){const b=E('button',setView===tab?'active':'',label);b.type='button';b.addEventListener('click',()=>{setView=tab;renderSetDetail(currentDetail);});tabs.append(b);}parent.append(tabs);
-  if(setView==='missing')renderChecklist(parent,detail);else renderPicking(parent,detail);
+  const tabs=E('div','set-tabs');const likely=(detail.possible_matches||[]).filter(m=>m.similar_shade).length;for(const [tab,label] of [['picking','Pick from loose bags'],['possible',`Possible matches${likely?' ('+likely+')':''}`],['missing','Full parts checklist']]){const b=E('button',setView===tab?'active':'',label);b.type='button';b.addEventListener('click',()=>{setView=tab;renderSetDetail(currentDetail);});tabs.append(b);}parent.append(tabs);
+  if(setView==='missing')renderChecklist(parent,detail);else if(setView==='possible')renderPossibleMatches(parent,detail);else renderPicking(parent,detail);
 }
 function renderChecklist(parent,detail){const grid=E('div','missing-grid');for(const p of detail.parts){const entry=E('div','missing-entry'),thumbnail=E('div');if(Number(p.required)>0 && Number(p.collected)>=Number(p.required)){entry.style.backgroundColor='#e3f6e9';entry.style.borderColor='#91cda4';}appendImage(thumbnail,p.image_url,p.description);const text=E('div');text.append(E('strong','',p.description),E('span','',`Part ${p.part_id} · ${p.colour}`),E('div','',`${p.collected}/${p.required} collected · ${p.available_loose} loose`));entry.append(thumbnail,text);grid.append(entry);}parent.append(grid);}
+
+function renderPossibleMatches(parent,detail){
+  parent.append(E('h3','', 'Possible matches · check the physical colour'));
+  sectionMessage(parent,'hint','These are NOT confirmed matches: the part ID is identical, but the recorded colour differs. Compare the real brick with the reference image before correcting its colour. Nothing here counts toward the set automatically.');
+  const all=detail.possible_matches||[];
+  const likely=all.filter(m=>m.similar_shade);
+  const other=all.filter(m=>!m.similar_shade);
+  const toolbar=E('div','possible-toolbar');
+  toolbar.append(E('strong','',`${likely.length} likely colour mix-up${likely.length===1?'':'s'}`));
+  if(other.length){const toggle=E('button','mini-button',`${showOtherColourMatches?'Hide':'Show'} ${other.length} other colour variant${other.length===1?'':'s'}`);toggle.type='button';toggle.addEventListener('click',()=>{showOtherColourMatches=!showOtherColourMatches;renderSetDetail(currentDetail);});toolbar.append(toggle);}
+  parent.append(toolbar);
+  const shown=showOtherColourMatches?all:likely;
+  if(!shown.length){sectionMessage(parent,'empty',all.length?'No likely colour mix-ups. You can show other recorded colours for the same part ID.':'No possible matches found for missing parts in your loose inventory.');return;}
+  const grid=E('div','possible-grid');
+  for(const match of shown){
+    const card=E('article','possible-card');
+    const photo=E('div','possible-image');appendImage(photo,match.image_url,match.description);
+    const content=E('div','possible-content');
+    content.append(E('strong','',match.description),E('div','pick-meta',`Part ${match.part_id} · Bag ${match.source_bag}`));
+    const colours=E('div','possible-colours');
+    colours.append(E('div','','Set needs: '+match.required_colour),E('div','','You recorded: '+match.recorded_colour));
+    content.append(colours);
+    content.append(E('div','pick-meta',`${match.missing} still needed · ${match.available} available to inspect`));
+    const label=E('div','possible-label',match.similar_shade?'Likely colour confusion':'Other recorded colour · verify carefully');content.append(label);
+    const actions=E('div','possible-actions'),quantity=E('input');quantity.type='number';quantity.min='1';quantity.max=String(match.available);quantity.step='1';quantity.value=String(match.suggested);quantity.setAttribute('aria-label',`Quantity to verify in bag ${match.source_bag}`);
+    const button=E('button','btn secondary','Correct verified colour');button.type='button';
+    button.addEventListener('click',async()=>{
+      const amount=Number(quantity.value);
+      if(!Number.isSafeInteger(amount)||amount<1||amount>match.available){notice(`Enter 1–${match.available} pieces.`,true);return;}
+      if(!confirm(`Have you physically checked ${amount} × ${match.part_id} in Bag ${match.source_bag} and verified that they are ${match.required_colour}, not ${match.recorded_colour}?\n\nThis will correct their CSV colour, but NOT move them into the set yet.`))return;
+      button.disabled=true;
+      try{
+        await request('/api/correct-colour',{set_num:match.set_num,bag_number:match.source_bag,part_id:match.part_id,recorded_colour:match.recorded_colour,required_colour:match.required_colour,quantity:amount});
+        await refresh();setView='picking';await openSet(match.set_num);
+        notice(`Corrected ${amount} piece${amount===1?'':'s'} in Bag ${match.source_bag}. They now appear under Pick from loose bags; select and confirm the bag to collect them.`);
+      }catch(err){notice('Could not correct colour: '+err.message,true);button.disabled=false;}
+    });
+    actions.append(quantity,button);content.append(actions);
+    card.append(photo,content);grid.append(card);
+  }
+  parent.append(grid);
+}
+
 function renderPicking(parent,detail){parent.append(E('h3','', 'Collect from your loose bags'));sectionMessage(parent,'hint','Click each image to mark a proposed quantity. Use + or − to adjust. When finished with a bag, confirm it to move the staged pieces into numbered set bags.');
   const available=detail.picking;if(!available.length){sectionMessage(parent,'hint',detail.total_collected>=detail.total_required?'All required parts collected.':'No matching pieces currently remain in loose bags.');return;}
   for(const bag of available){const card=E('section','bag-pick-card'+(bag.done?' complete':'')),heading=E('div','bag-pick-head'),title=E('div');title.append(E('h3','',`Bag ${bag.bag_number}`),E('small','',bag.done?'Marked finished':'Select pieces you physically removed'));heading.append(title);const status=E('strong','',bag.done?'✓ Completed':'');heading.append(status);card.append(heading);
@@ -125,3 +168,53 @@ async function updateSettings(){try{const s=await get('/api/settings');$('settin
 $('settings-form').addEventListener('submit',async event=>{event.preventDefault();try{await request('/api/settings',{api_key:$('api-key').value.trim()});$('api-key').value='';await updateSettings();notice('Rebrickable API key saved locally.');}catch(err){notice(err.message,true);}});
 window.addEventListener('beforeunload',()=>{cameraOff();if(photoUrl)URL.revokeObjectURL(photoUrl);});
 refresh().then(updateSettings).catch(err=>notice('Startup failed: '+err.message,true));
+
+// Configurable bag capacity, persisted locally.
+(function () {
+  const host = document.querySelector('#panel-settings .settings-card');
+  if (!host) return;
+  const section = document.createElement('section');
+  section.innerHTML = `
+    <h2>Bag capacity</h2>
+    <p>Maximum total pieces in each loose or set bag. Existing pieces remain in their current bags.</p>
+    <form id="bag-capacity-form">
+      <label for="bag-capacity-input">Maximum pieces per bag</label>
+      <input id="bag-capacity-input" type="number" min="1" max="10000" step="1" required>
+      <button type="submit" class="btn primary">Save bag limit</button>
+    </form>
+    <p class="hint" id="bag-capacity-status" role="status"></p>
+    <hr style="border:0;border-top:1px solid #e5e7eb;margin:24px 0">`;
+  host.insertBefore(section, host.firstChild);
+  const field = document.getElementById('bag-capacity-input');
+  const status = document.getElementById('bag-capacity-status');
+  function displayCapacity(limit) {
+    field.value = String(limit);
+    const quantity = document.getElementById('quantity');
+    if (quantity) quantity.max = String(limit);
+    const scanLabel = document.querySelector('#panel-scan .badge-neutral');
+    if (scanLabel) scanLabel.textContent = limit + ' pieces / bag';
+    const bagsHint = document.querySelector('#panel-bags .table-header p');
+    if (bagsHint) bagsHint.textContent = `Loose storage and set bags, all limited to ${limit} total pieces.`;
+    status.textContent = `Current limit: ${limit} pieces per bag. Saved locally.`;
+  }
+  get('/api/settings').then(config => displayCapacity(config.bag_capacity))
+    .catch(err => { status.textContent = 'Could not load bag limit: ' + err.message; });
+  document.getElementById('bag-capacity-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const limit = Number(field.value);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10000) {
+      status.textContent = 'Enter a whole number from 1 to 10,000.';
+      return;
+    }
+    try {
+      const config = await request('/api/settings', {bag_capacity: limit});
+      inventory.capacity = config.bag_capacity;
+      displayCapacity(config.bag_capacity);
+      renderBags();
+      notice(`Bag limit updated to ${config.bag_capacity} pieces. Inventory unchanged.`);
+    } catch (err) {
+      status.textContent = 'Unable to save: ' + err.message;
+      notice(err.message, true);
+    }
+  });
+})();
