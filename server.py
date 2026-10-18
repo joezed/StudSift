@@ -25,6 +25,8 @@ DEFAULT_CAPACITY = 100
 MAX_CAPACITY = 10000
 MAX_REQUEST = 10 * 1024 * 1024
 LOCK = threading.RLock()
+PART_COLOUR_CACHE = {}
+COLOUR_CACHE_TTL = 24 * 60 * 60
 BRICKOGNIZE = 'https://api.brickognize.com/predict/parts/?predict_color=true&top_k_items=5&top_k_colors=5'
 RB_BASE = 'https://rebrickable.com/api/v3/lego/'
 FILES = {
@@ -617,6 +619,50 @@ def rb_pages(path, params=None):
     return results
 
 
+
+def part_colour_options(part_id, set_num=''):
+    """Return valid Rebrickable colour variants for a part. No inventory mutation."""
+    part_id = str(part_id).strip()
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', part_id):
+        raise ValueError('Invalid part ID.')
+    if set_num:
+        set_num = set_number(set_num)
+    wanted = {}
+    if set_num:
+        with LOCK:
+            requirements, found = requirement_counts(load_all(), set_num)
+            for key, req in requirements.items():
+                if key[0] == part_id.casefold():
+                    remaining = max(0, int(req['required'])-found[key])
+                    if remaining:
+                        wanted[colour_key(req['colour'])] = remaining
+    key = api_key()
+    if not key:
+        return {'part_id':part_id, 'verified':False, 'colours':[],
+                'active_set_missing':wanted, 'message':'Set a Rebrickable API key to verify valid part colours.'}
+    cache_key = (part_id.lower(),key)
+    entry = PART_COLOUR_CACHE.get(cache_key)
+    if not entry or (time.monotonic()-entry[0]) > COLOUR_CACHE_TTL:
+        rows = rb_pages('parts/'+urllib.parse.quote(part_id,safe='')+'/colors/')
+        variants=[]
+        for item in rows:
+            name = item.get('color_name') or (item.get('color') or {}).get('name')
+            if not name:
+                continue
+            variants.append({'name':str(name), 'color_id':item.get('color_id'),
+                             'num_sets':item.get('num_sets',0)})
+        PART_COLOUR_CACHE[cache_key]=(time.monotonic(),variants)
+        entry = PART_COLOUR_CACHE[cache_key]
+        if len(PART_COLOUR_CACHE)>200:
+            PART_COLOUR_CACHE.pop(next(iter(PART_COLOUR_CACHE)))
+    variants=[]
+    for item in entry[1]:
+        needed = wanted.get(colour_key(item['name']),0)
+        variants.append({**item,'needed_for_set':needed})
+    variants.sort(key=lambda x:(not bool(x['needed_for_set']),-int(x['needed_for_set']),x['name'].casefold()))
+    return {'part_id':part_id,'verified':True,'colours':variants,'active_set_missing':wanted}
+
+
 def import_set(payload):
     num=set_number(payload.get('set_num',''))
     with LOCK:
@@ -851,6 +897,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path=='/api/set':
                 num=set_number(urllib.parse.parse_qs(route.query).get('set_num',[''])[0])
                 self.json_out(200,get_set_detail(num))
+            elif path=='/api/part-colours':
+                query=urllib.parse.parse_qs(route.query)
+                part=query.get('part_id',[''])[0]
+                active=query.get('set_num',[''])[0]
+                self.json_out(200,part_colour_options(part,active))
             elif path=='/api/colours':
                 with LOCK:
                     self.json_out(200,rows_for('colours'))
